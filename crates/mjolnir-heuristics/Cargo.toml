@@ -1,0 +1,15 @@
+[package]
+name = "mjolnir-heuristics"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+mjolnir-core.workspace = true
+mjolnir-crypto.workspace = true
+mjolnir-static.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+async-trait.workspace = true
+chrono.workspace = true
+uuid.workspace = true

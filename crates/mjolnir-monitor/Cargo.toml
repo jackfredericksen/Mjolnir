@@ -1,0 +1,13 @@
+[package]
+name = "mjolnir-monitor"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+mjolnir-core.workspace = true
+mjolnir-scanner.workspace = true
+notify.workspace = true
+tokio.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true

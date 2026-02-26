@@ -1,0 +1,99 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/mjolnir-core",
+    "crates/mjolnir-crypto",
+    "crates/mjolnir-scanner",
+    "crates/mjolnir-signatures",
+    "crates/mjolnir-heuristics",
+    "crates/mjolnir-ml",
+    "crates/mjolnir-static",
+    "crates/mjolnir-monitor",
+    "crates/mjolnir-quarantine",
+    "crates/mjolnir-updater",
+    "crates/mjolnir-cli",
+    "ui/src-tauri",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1.35", features = ["full"] }
+async-trait = "0.1"
+futures = "0.3"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+bincode = "1.3"
+toml = "0.8"
+
+# Cryptography - Classical
+blake3 = "1.5"
+ed25519-dalek = { version = "2.1", features = ["rand_core", "serde"] }
+aes-gcm = "0.10"
+rand = "0.8"
+sha2 = "0.10"
+
+# Cryptography - Post-Quantum
+pqcrypto-dilithium = "0.5"
+pqcrypto-kyber = "0.8"
+pqcrypto-traits = "0.3"
+
+# File format parsing
+goblin = "0.8"
+
+# YARA
+yara-x = "0.8"
+
+# Machine learning
+ndarray = "0.15"
+
+# Filesystem monitoring
+notify = "6.1"
+
+# HTTP
+reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
+
+# CLI
+clap = { version = "4.4", features = ["derive"] }
+
+# Logging / tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Error handling
+thiserror = "1.0"
+anyhow = "1.0"
+
+# Utilities
+walkdir = "2.4"
+rayon = "1.8"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.6", features = ["v4", "serde"] }
+hex = "0.4"
+bytes = "1.5"
+memmap2 = "0.9"
+tempfile = "3.9"
+dashmap = "5.5"
+
+# Internal crates
+mjolnir-core = { path = "crates/mjolnir-core" }
+mjolnir-crypto = { path = "crates/mjolnir-crypto" }
+mjolnir-scanner = { path = "crates/mjolnir-scanner" }
+mjolnir-signatures = { path = "crates/mjolnir-signatures" }
+mjolnir-heuristics = { path = "crates/mjolnir-heuristics" }
+mjolnir-ml = { path = "crates/mjolnir-ml" }
+mjolnir-static = { path = "crates/mjolnir-static" }
+mjolnir-monitor = { path = "crates/mjolnir-monitor" }
+mjolnir-quarantine = { path = "crates/mjolnir-quarantine" }
+mjolnir-updater = { path = "crates/mjolnir-updater" }
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

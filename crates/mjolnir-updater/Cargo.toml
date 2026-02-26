@@ -1,0 +1,16 @@
+[package]
+name = "mjolnir-updater"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+mjolnir-core.workspace = true
+mjolnir-crypto.workspace = true
+reqwest.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+chrono.workspace = true
+blake3.workspace = true

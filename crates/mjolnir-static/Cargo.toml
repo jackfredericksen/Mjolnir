@@ -1,0 +1,11 @@
+[package]
+name = "mjolnir-static"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+mjolnir-core.workspace = true
+goblin.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true

@@ -1,0 +1,23 @@
+[package]
+name = "mjolnir-cli"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "mjolnir"
+path = "src/main.rs"
+
+[dependencies]
+mjolnir-core.workspace = true
+mjolnir-scanner.workspace = true
+mjolnir-quarantine.workspace = true
+mjolnir-monitor.workspace = true
+mjolnir-updater.workspace = true
+mjolnir-signatures.workspace = true
+clap.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true
+chrono.workspace = true
+uuid.workspace = true

@@ -1,0 +1,24 @@
+[package]
+name = "mjolnir-scanner"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+mjolnir-core.workspace = true
+mjolnir-crypto.workspace = true
+mjolnir-signatures.workspace = true
+mjolnir-heuristics.workspace = true
+mjolnir-ml.workspace = true
+mjolnir-static.workspace = true
+tokio.workspace = true
+rayon.workspace = true
+blake3.workspace = true
+walkdir.workspace = true
+memmap2.workspace = true
+dashmap.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+async-trait.workspace = true
+chrono.workspace = true
+uuid.workspace = true

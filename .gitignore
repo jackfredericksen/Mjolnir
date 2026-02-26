@@ -1,0 +1,30 @@
+/target
+**/*.rs.bk
+*.pdb
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Node (Tauri frontend)
+ui/node_modules/
+ui/dist/
+
+# Environment
+.env
+.env.local
+
+# Quarantine vault (never commit encrypted malware samples)
+quarantine/
+
+# ML models (too large for git)
+models/*.bin
+
+# Build artifacts
+*.d
