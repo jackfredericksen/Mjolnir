@@ -4,6 +4,8 @@ export type ThreatSeverity = 'Low' | 'Medium' | 'High' | 'Critical'
 
 export type DetectionSource = 'Signature' | 'Heuristic' | 'MachineLearning' | 'StaticAnalysis'
 
+export type ScanType = 'quick' | 'full' | 'threat' | 'custom'
+
 export interface Detection {
   id: string
   file_path: string
@@ -52,3 +54,42 @@ export interface SystemStatus {
   quarantine_count: number
   last_scan: string | null
 }
+
+export interface ScanTypeConfig {
+  id: ScanType
+  label: string
+  description: string
+  estimate: string
+  coverage: string[]
+}
+
+export const SCAN_TYPES: ScanTypeConfig[] = [
+  {
+    id: 'quick',
+    label: 'Quick Scan',
+    description: 'Scans high-risk locations where malware commonly hides.',
+    estimate: '~3–5 min',
+    coverage: ['Downloads', 'Desktop', 'Documents', '/tmp'],
+  },
+  {
+    id: 'full',
+    label: 'Full Scan',
+    description: 'Deep scan of your entire home directory.',
+    estimate: '15–60 min',
+    coverage: ['Entire home directory'],
+  },
+  {
+    id: 'threat',
+    label: 'Threat Scan',
+    description: 'Targets persistence mechanisms and malware staging areas.',
+    estimate: '~5–10 min',
+    coverage: ['LaunchAgents', 'LaunchDaemons', 'Cron jobs', 'Shell configs', '/tmp'],
+  },
+  {
+    id: 'custom',
+    label: 'Custom Scan',
+    description: 'Pick any folder or file to scan on demand.',
+    estimate: 'Varies',
+    coverage: ['User-selected path'],
+  },
+]

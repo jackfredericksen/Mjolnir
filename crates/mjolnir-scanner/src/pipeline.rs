@@ -202,6 +202,114 @@ impl ScanPipeline {
         })
     }
 
+    /// Resolve scan targets based on scan type.
+    /// Returns paths that exist on the current OS; Custom returns empty (caller provides targets).
+    pub fn resolve_targets(scan_type: ScanType) -> Vec<PathBuf> {
+        let home = std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("/"));
+
+        let mut targets: Vec<PathBuf> = match scan_type {
+            ScanType::Quick => {
+                let mut t = vec![
+                    home.join("Downloads"),
+                    home.join("Desktop"),
+                    home.join("Documents"),
+                ];
+                #[cfg(target_os = "windows")]
+                if let Ok(tmp) = std::env::var("TEMP") {
+                    t.push(PathBuf::from(tmp));
+                }
+                #[cfg(not(target_os = "windows"))]
+                {
+                    t.push(PathBuf::from("/tmp"));
+                    t.push(PathBuf::from("/var/tmp"));
+                }
+                t
+            }
+
+            ScanType::Full => vec![home],
+
+            ScanType::Threat => {
+                let mut t = Vec::new();
+
+                #[cfg(target_os = "macos")]
+                {
+                    t.extend([
+                        home.join("Library/LaunchAgents"),
+                        PathBuf::from("/Library/LaunchAgents"),
+                        PathBuf::from("/Library/LaunchDaemons"),
+                        home.join("Library/Application Support"),
+                        home.join("Library/Caches"),
+                        PathBuf::from("/tmp"),
+                        PathBuf::from("/private/tmp"),
+                        PathBuf::from("/etc/cron.d"),
+                        PathBuf::from("/etc/periodic"),
+                        PathBuf::from("/etc/profile.d"),
+                        home.join(".zshrc"),
+                        home.join(".bashrc"),
+                        home.join(".bash_profile"),
+                        home.join(".zprofile"),
+                        home.join(".profile"),
+                    ]);
+                }
+
+                #[cfg(target_os = "linux")]
+                {
+                    t.extend([
+                        PathBuf::from("/tmp"),
+                        PathBuf::from("/var/tmp"),
+                        PathBuf::from("/dev/shm"),
+                        PathBuf::from("/etc/init.d"),
+                        PathBuf::from("/etc/cron.d"),
+                        PathBuf::from("/etc/cron.daily"),
+                        PathBuf::from("/etc/cron.weekly"),
+                        PathBuf::from("/etc/profile.d"),
+                        PathBuf::from("/usr/local/bin"),
+                        home.join(".config/autostart"),
+                        home.join(".bashrc"),
+                        home.join(".bash_profile"),
+                        home.join(".profile"),
+                        home.join(".zshrc"),
+                    ]);
+                }
+
+                #[cfg(target_os = "windows")]
+                {
+                    if let Ok(appdata) = std::env::var("APPDATA") {
+                        let appdata = PathBuf::from(&appdata);
+                        t.push(
+                            appdata.join(
+                                "Microsoft\\Windows\\Start Menu\\Programs\\Startup",
+                            ),
+                        );
+                        t.push(appdata.join("Roaming"));
+                    }
+                    if let Ok(tmp) = std::env::var("TEMP") {
+                        t.push(PathBuf::from(tmp));
+                    }
+                    if let Ok(windir) = std::env::var("WINDIR") {
+                        let windir = PathBuf::from(&windir);
+                        t.push(windir.join("System32\\drivers"));
+                        t.push(windir.join("Temp"));
+                        t.push(windir.join("Tasks"));
+                    }
+                    if let Ok(programdata) = std::env::var("PROGRAMDATA") {
+                        t.push(PathBuf::from(programdata));
+                    }
+                }
+
+                t
+            }
+
+            ScanType::Custom => vec![],
+        };
+
+        targets.retain(|p| p.exists());
+        targets
+    }
+
     /// Scan specific targets from a scan request
     pub fn execute_scan(
         &self,
@@ -211,9 +319,16 @@ impl ScanPipeline {
         let started_at = Utc::now();
         let start = Instant::now();
 
-        // Collect all files from all targets
+        // Resolve targets: for typed scans use OS locations; for Custom use provided targets
+        let resolved: Vec<PathBuf> = if request.scan_type == ScanType::Custom {
+            request.targets.clone()
+        } else {
+            Self::resolve_targets(request.scan_type)
+        };
+
+        // Collect all files from all resolved targets
         let mut all_files: Vec<PathBuf> = Vec::new();
-        for target in &request.targets {
+        for target in &resolved {
             if target.is_file() {
                 all_files.push(target.clone());
             } else if target.is_dir() {

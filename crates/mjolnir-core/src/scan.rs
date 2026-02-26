@@ -12,8 +12,10 @@ use crate::threat::Detection;
 pub enum ScanType {
     /// Scan common locations (Downloads, Desktop, temp)
     Quick,
-    /// Full system scan
+    /// Full system scan (entire home directory)
     Full,
+    /// Scan known threat persistence locations (LaunchAgents, cron, startup, temp)
+    Threat,
     /// Scan specific targets
     Custom,
 }

@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import type {
   ViewType,
+  ScanType,
   Detection,
   ScanReport,
   QuarantineEntry,
@@ -16,6 +17,8 @@ interface AppState {
   // Scanning
   isScanning: boolean
   setIsScanning: (scanning: boolean) => void
+  selectedScanType: ScanType
+  setSelectedScanType: (type: ScanType) => void
   scanProgress: ScanProgressSnapshot | null
   setScanProgress: (progress: ScanProgressSnapshot | null) => void
   lastReport: ScanReport | null
@@ -53,6 +56,8 @@ export const useAppStore = create<AppState>((set) => ({
   // Scanning
   isScanning: false,
   setIsScanning: (scanning) => set({ isScanning: scanning }),
+  selectedScanType: 'quick',
+  setSelectedScanType: (type) => set({ selectedScanType: type }),
   scanProgress: null,
   setScanProgress: (progress) => set({ scanProgress: progress }),
   lastReport: null,
