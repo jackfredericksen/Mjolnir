@@ -60,7 +60,10 @@ async fn start_scan(
     let paths: Vec<PathBuf> = targets.iter().map(PathBuf::from).collect();
     let progress = Arc::new(ScanProgress::new());
 
-    // Spawn a task that emits progress snapshots to the frontend every 150 ms
+    // Emit immediately so the frontend knows the scan started before the first tick
+    let _ = app_handle.emit("scan-progress", progress.snapshot());
+
+    // Spawn a task that emits progress snapshots every 50 ms while the scan runs
     let progress_for_emitter = Arc::clone(&progress);
     let app_for_emitter = app_handle.clone();
     let (stop_tx, mut stop_rx) = tokio::sync::oneshot::channel::<()>();
@@ -69,7 +72,7 @@ async fn start_scan(
         loop {
             tokio::select! {
                 _ = &mut stop_rx => break,
-                _ = tokio::time::sleep(Duration::from_millis(150)) => {
+                _ = tokio::time::sleep(Duration::from_millis(50)) => {
                     let snapshot = progress_for_emitter.snapshot();
                     let _ = app_for_emitter.emit("scan-progress", snapshot);
                 }

@@ -79,6 +79,9 @@ export function ScanView() {
     }
   }, [setScanProgress])
 
+  // Whether we're still in the file-enumeration phase (files haven't been counted yet)
+  const isEnumerating = isScanning && (!scanProgress || scanProgress.files_total === 0)
+
   const progressPercent =
     scanProgress && scanProgress.files_total > 0
       ? Math.min(100, Math.round((scanProgress.files_scanned / scanProgress.files_total) * 100))
@@ -286,17 +289,26 @@ export function ScanView() {
           {/* Progress bar */}
           <div>
             <div className="flex justify-between text-xs text-gray-500 dark:text-gray-400 mb-1.5">
-              <span>
-                {scanProgress?.files_scanned ?? 0} /{' '}
-                {scanProgress?.files_total ?? '…'} files
-              </span>
-              <span>{progressPercent}%</span>
+              {isEnumerating ? (
+                <span className="italic text-gray-400">Enumerating files…</span>
+              ) : (
+                <span>
+                  {scanProgress?.files_scanned ?? 0} /{' '}
+                  {scanProgress?.files_total ?? '…'} files
+                </span>
+              )}
+              {!isEnumerating && <span>{progressPercent}%</span>}
             </div>
             <div className="w-full bg-gray-100 dark:bg-gray-800 rounded-full h-2 overflow-hidden">
-              <div
-                className="h-2 rounded-full bg-gradient-to-r from-mjolnir-500 to-mjolnir-400 transition-all duration-300"
-                style={{ width: `${progressPercent}%` }}
-              />
+              {isEnumerating ? (
+                /* Indeterminate animated bar while counting files */
+                <div className="h-2 w-full rounded-full bg-gradient-to-r from-mjolnir-500 via-mjolnir-400 to-mjolnir-500 bg-[length:200%_100%] animate-pulse" />
+              ) : (
+                <div
+                  className="h-2 rounded-full bg-gradient-to-r from-mjolnir-500 to-mjolnir-400 transition-all duration-300"
+                  style={{ width: `${progressPercent}%` }}
+                />
+              )}
             </div>
           </div>
 
@@ -304,7 +316,11 @@ export function ScanView() {
           <div className="grid grid-cols-3 gap-3">
             <div className="bg-gray-50 dark:bg-gray-800 rounded-lg p-3 text-center">
               <div className="text-lg font-bold text-gray-900 dark:text-white">
-                {scanProgress?.files_scanned ?? 0}
+                {isEnumerating ? (
+                  <span className="text-gray-400 animate-pulse">…</span>
+                ) : (
+                  scanProgress?.files_scanned ?? 0
+                )}
               </div>
               <div className="text-[11px] text-gray-500">Files scanned</div>
             </div>

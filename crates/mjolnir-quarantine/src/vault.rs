@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use uuid::Uuid;
 
 use mjolnir_core::error::{MjolnirError, Result};
@@ -36,15 +36,19 @@ impl QuarantineVault {
     pub fn new(vault_dir: &Path) -> Result<Self> {
         std::fs::create_dir_all(vault_dir)?;
 
-        // Load or generate vault key
+        // Load or generate vault key; zeroize raw bytes as soon as the cipher is built
         let key_path = vault_dir.join(".vault_key");
-        let key = if key_path.exists() {
-            let key_bytes = std::fs::read(&key_path)?;
+        let mut key = if key_path.exists() {
+            let mut key_bytes = std::fs::read(&key_path)?;
             if key_bytes.len() != 32 {
-                return Err(MjolnirError::Quarantine("Invalid vault key".into()));
+                // Wipe before returning the error
+                for b in key_bytes.iter_mut() { *b = 0; }
+                return Err(MjolnirError::Quarantine("Invalid vault key length".into()));
             }
             let mut key = [0u8; 32];
             key.copy_from_slice(&key_bytes);
+            // Wipe the heap copy
+            for b in key_bytes.iter_mut() { *b = 0; }
             key
         } else {
             let key = AesGcmCipher::generate_key();
@@ -58,9 +62,13 @@ impl QuarantineVault {
             key
         };
 
+        let cipher = AesGcmCipher::new(&key);
+        // Wipe the stack copy now that the cipher has expanded the key internally
+        for b in key.iter_mut() { *b = 0; }
+
         Ok(Self {
             vault_dir: vault_dir.to_path_buf(),
-            cipher: AesGcmCipher::new(&key),
+            cipher,
         })
     }
 
@@ -108,11 +116,42 @@ impl QuarantineVault {
         Ok(entry)
     }
 
+    /// Validate that a restore path is safe (no traversal, no system directories).
+    fn validate_restore_path(path: &Path) -> Result<()> {
+        // Reject any path containing ".." components
+        if path.components().any(|c| c == Component::ParentDir) {
+            return Err(MjolnirError::Quarantine(
+                "Restore path contains path traversal components".into(),
+            ));
+        }
+
+        // Reject restores into sensitive system directories
+        let s = path.to_string_lossy();
+        let blocked = [
+            "/etc/", "/bin/", "/sbin/", "/lib/", "/lib64/",
+            "/boot/", "/sys/", "/proc/", "/dev/",
+            "/usr/bin/", "/usr/sbin/", "/usr/lib/",
+        ];
+        for prefix in &blocked {
+            if s.starts_with(prefix) {
+                return Err(MjolnirError::Quarantine(format!(
+                    "Restoring to system directory '{}' is not permitted",
+                    prefix
+                )));
+            }
+        }
+
+        Ok(())
+    }
+
     /// Restore a quarantined file to its original location
     pub fn restore(&self, id: &Uuid) -> Result<PathBuf> {
         let entry = self
             .find_entry(id)?
             .ok_or_else(|| MjolnirError::Quarantine(format!("Entry {} not found", id)))?;
+
+        // Guard against a tampered manifest pointing at system paths
+        Self::validate_restore_path(&entry.original_path)?;
 
         let vault_path = self.vault_dir.join(format!("{}.mjq", id));
         let encrypted = std::fs::read(&vault_path)?;

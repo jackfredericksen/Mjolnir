@@ -11,6 +11,10 @@ pub struct CacheEntry {
     pub is_clean: bool,
 }
 
+/// Maximum number of entries before the cache is cleared.
+/// At ~150 bytes per entry this caps cache RAM at ≈ 7.5 MB.
+const CACHE_MAX_ENTRIES: usize = 50_000;
+
 /// Thread-safe scan cache to skip files that haven't changed
 pub struct ScanCache {
     entries: DashMap<String, CacheEntry>,
@@ -34,8 +38,13 @@ impl ScanCache {
         })
     }
 
-    /// Insert or update a cache entry
+    /// Insert or update a cache entry.
+    /// If the cache is at capacity it is cleared before inserting so that
+    /// a single long-running Full scan cannot grow the map without bound.
     pub fn insert(&self, hash: String, db_version: u64, is_clean: bool) {
+        if self.entries.len() >= CACHE_MAX_ENTRIES {
+            self.entries.clear();
+        }
         self.entries.insert(
             hash.clone(),
             CacheEntry {

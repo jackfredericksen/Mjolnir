@@ -62,9 +62,11 @@ impl HybridPublicKey {
             return Err(CryptoError::InvalidPublicKey);
         }
 
-        let classical =
-            Ed25519VerifyingKey::from_bytes(bytes[..ed_size].try_into().unwrap())
-                .map_err(|_| CryptoError::InvalidPublicKey)?;
+        let ed_bytes: &[u8; 32] = bytes[..ed_size]
+            .try_into()
+            .map_err(|_| CryptoError::InvalidPublicKey)?;
+        let classical = Ed25519VerifyingKey::from_bytes(ed_bytes)
+            .map_err(|_| CryptoError::InvalidPublicKey)?;
 
         let post_quantum = DilithiumPubKey::from_bytes(&bytes[ed_size..])
             .map_err(|_| CryptoError::InvalidPublicKey)?;
@@ -159,8 +161,10 @@ impl HybridKeypair {
             return Err(CryptoError::InvalidSecretKey);
         }
 
-        let classical_secret =
-            Ed25519SigningKey::from_bytes(bytes[..ed_secret_size].try_into().unwrap());
+        let ed_secret_bytes: &[u8; 32] = bytes[..ed_secret_size]
+            .try_into()
+            .map_err(|_| CryptoError::InvalidSecretKey)?;
+        let classical_secret = Ed25519SigningKey::from_bytes(ed_secret_bytes);
         let classical_public = classical_secret.verifying_key();
 
         let dil_secret_start = ed_secret_size;
@@ -246,8 +250,10 @@ impl HybridSignature {
             return Err(CryptoError::InvalidSignature);
         }
 
-        let classical =
-            Ed25519Sig::from_bytes(bytes[..ed_size].try_into().unwrap());
+        let ed_sig_bytes: &[u8; 64] = bytes[..ed_size]
+            .try_into()
+            .map_err(|_| CryptoError::InvalidSignature)?;
+        let classical = Ed25519Sig::from_bytes(ed_sig_bytes);
 
         let post_quantum = DilithiumSig::from_bytes(&bytes[ed_size..])
             .map_err(|_| CryptoError::InvalidSignature)?;

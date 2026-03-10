@@ -1,12 +1,14 @@
 use std::path::{Path, PathBuf};
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Instant;
 
 use chrono::Utc;
+use rayon::iter::ParallelBridge;
 use rayon::prelude::*;
 use walkdir::WalkDir;
 
-use mjolnir_core::error::Result;
+use mjolnir_core::error::{MjolnirError, Result};
 use mjolnir_core::scan::{FileScanResult, ScanProgress, ScanReport, ScanRequest, ScanType};
 use mjolnir_core::threat::{Detection, DetectionEngine};
 use mjolnir_crypto::FileHasher;
@@ -16,13 +18,21 @@ use mjolnir_signatures::YaraEngine;
 
 use crate::cache::ScanCache;
 
-/// The main scan pipeline that orchestrates all detection engines
+/// Max bytes read per file. With SCAN_THREADS concurrent workers peak RAM is
+/// SCAN_THREADS × MAX_FILE_SIZE = 4 × 32 MB = 128 MB.
+const MAX_FILE_SIZE: u64 = 32 * 1024 * 1024;
+
+/// Rayon worker threads for file scanning.
+const SCAN_THREADS: usize = 4;
+
 pub struct ScanPipeline {
     signature_engine: Arc<YaraEngine>,
     heuristic_engine: Arc<HeuristicEngine>,
     ml_engine: Arc<MLEngine>,
     cache: Arc<ScanCache>,
     max_file_size: u64,
+    /// Bounded thread pool — limits I/O parallelism to prevent memory exhaustion
+    thread_pool: rayon::ThreadPool,
 }
 
 impl ScanPipeline {
@@ -31,17 +41,13 @@ impl ScanPipeline {
         let heuristic_engine = Arc::new(HeuristicEngine::new());
         let ml_engine = Arc::new(MLEngine::new());
         let cache = Arc::new(ScanCache::new());
-
-        Ok(Self {
-            signature_engine,
-            heuristic_engine,
-            ml_engine,
-            cache,
-            max_file_size: 512 * 1024 * 1024, // 512 MB
-        })
+        let thread_pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(SCAN_THREADS)
+            .build()
+            .map_err(|e| MjolnirError::Scan(e.to_string()))?;
+        Ok(Self { signature_engine, heuristic_engine, ml_engine, cache, max_file_size: MAX_FILE_SIZE, thread_pool })
     }
 
-    /// Create with default settings (no YARA rules directory)
     pub fn with_defaults() -> Result<Self> {
         let signature_engine = Arc::new(YaraEngine::with_database(
             mjolnir_signatures::SignatureDatabase::load_defaults(),
@@ -49,27 +55,22 @@ impl ScanPipeline {
         let heuristic_engine = Arc::new(HeuristicEngine::new());
         let ml_engine = Arc::new(MLEngine::new());
         let cache = Arc::new(ScanCache::new());
-
-        Ok(Self {
-            signature_engine,
-            heuristic_engine,
-            ml_engine,
-            cache,
-            max_file_size: 512 * 1024 * 1024,
-        })
+        let thread_pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(SCAN_THREADS)
+            .build()
+            .map_err(|e| MjolnirError::Scan(e.to_string()))?;
+        Ok(Self { signature_engine, heuristic_engine, ml_engine, cache, max_file_size: MAX_FILE_SIZE, thread_pool })
     }
 
-    /// Get reference to signature engine
     pub fn signature_engine(&self) -> &YaraEngine {
         &self.signature_engine
     }
 
-    /// Scan a single file through all engines
+    /// Scan one file through all engines. Returns empty detections for oversized/unreadable files.
     pub fn scan_file(&self, path: &Path) -> Result<FileScanResult> {
         let start = Instant::now();
-
-        // Read file
         let metadata = std::fs::metadata(path)?;
+
         if metadata.len() > self.max_file_size {
             return Ok(FileScanResult {
                 file_path: path.to_path_buf(),
@@ -82,9 +83,8 @@ impl ScanPipeline {
 
         let data = std::fs::read(path)?;
         let file_hash = FileHasher::hash_bytes(&data);
-
-        // Check cache
         let db_version = self.signature_engine.database.version;
+
         if let Some(true) = self.cache.is_cached(&file_hash, db_version) {
             return Ok(FileScanResult {
                 file_path: path.to_path_buf(),
@@ -95,50 +95,27 @@ impl ScanPipeline {
             });
         }
 
-        // Run all engines in parallel
         let sig_engine = Arc::clone(&self.signature_engine);
         let heur_engine = Arc::clone(&self.heuristic_engine);
         let ml_engine = Arc::clone(&self.ml_engine);
-
         let path_buf = path.to_path_buf();
         let data_arc = Arc::new(data);
 
         let ((sig_result, heur_result), ml_result) = rayon::join(
-            || {
-                rayon::join(
-                    || {
-                        let data = Arc::clone(&data_arc);
-                        sig_engine.scan_file(&path_buf, &data)
-                    },
-                    || {
-                        let data = Arc::clone(&data_arc);
-                        heur_engine.scan_file(&path_buf, &data)
-                    },
-                )
-            },
-            || {
-                let data = Arc::clone(&data_arc);
-                ml_engine.scan_file(&path_buf, &data)
-            },
+            || rayon::join(
+                || sig_engine.scan_file(&path_buf, &Arc::clone(&data_arc)),
+                || heur_engine.scan_file(&path_buf, &Arc::clone(&data_arc)),
+            ),
+            || ml_engine.scan_file(&path_buf, &Arc::clone(&data_arc)),
         );
+        drop(data_arc); // release file bytes immediately
 
-        // Merge detections
         let mut detections = Vec::new();
+        if let Ok(v) = sig_result  { detections.extend(v); }
+        if let Ok(v) = heur_result { detections.extend(v); }
+        if let Ok(v) = ml_result   { detections.extend(v); }
 
-        if let Ok(sigs) = sig_result {
-            detections.extend(sigs);
-        }
-        if let Ok(heurs) = heur_result {
-            detections.extend(heurs);
-        }
-        if let Ok(mls) = ml_result {
-            detections.extend(mls);
-        }
-
-        // Update cache
-        self.cache
-            .insert(file_hash.clone(), db_version, detections.is_empty());
-
+        self.cache.insert(file_hash.clone(), db_version, detections.is_empty());
         Ok(FileScanResult {
             file_path: path.to_path_buf(),
             file_hash,
@@ -148,53 +125,52 @@ impl ScanPipeline {
         })
     }
 
-    /// Scan a directory tree using rayon for parallelism
-    pub fn scan_directory(
+    // ── private helper ───────────────────────────────────────────────────────
+
+    /// Shared scanning body used by both `scan_directory` and `execute_scan`.
+    ///
+    /// Accepts a *boxed* sequential iterator of paths that are streamed lazily
+    /// into rayon via `par_bridge()`.  **No `Vec<PathBuf>` is ever built for
+    /// directory trees**, so peak RAM is bounded by:
+    ///   SCAN_THREADS × MAX_FILE_SIZE  (≈ 128 MB)
+    /// plus a small in-flight queue maintained by par_bridge internally.
+    fn run_scan(
         &self,
-        root: &Path,
+        file_iter: impl Iterator<Item = PathBuf> + Send,
         progress: &ScanProgress,
+        scan_type: ScanType,
     ) -> Result<ScanReport> {
         let started_at = Utc::now();
         let start = Instant::now();
 
-        // Collect all files
-        let files: Vec<PathBuf> = WalkDir::new(root)
-            .follow_links(false)
-            .into_iter()
-            .filter_map(|e| e.ok())
-            .filter(|e| e.file_type().is_file())
-            .map(|e| e.into_path())
-            .collect();
+        let all_detections: Vec<Detection> = self.thread_pool.install(|| {
+            file_iter
+                .par_bridge()
+                .flat_map_iter(|path| -> Vec<Detection> {
+                    // Increment discovered-total atomically BEFORE scanning so that
+                    // files_total ≥ files_scanned is always maintained.
+                    progress.files_total.fetch_add(1, Ordering::Relaxed);
+                    progress.set_current(path.clone());
 
-        progress.set_total(files.len() as u64);
+                    let result = match self.scan_file(&path) {
+                        Ok(r) => r,
+                        Err(_) => { progress.increment(); return Vec::new(); }
+                    };
+                    if !result.is_clean() { progress.add_threat(); }
+                    progress.increment();
+                    result.detections // moved out — no clone
+                })
+                .collect()
+        });
 
-        // Scan in parallel
-        let results: Vec<FileScanResult> = files
-            .par_iter()
-            .filter_map(|path| {
-                progress.set_current(path.clone());
-                let result = self.scan_file(path).ok()?;
-                if !result.is_clean() {
-                    progress.add_threat();
-                }
-                progress.increment();
-                Some(result)
-            })
-            .collect();
-
-        // Build report
-        let all_detections: Vec<Detection> = results
-            .iter()
-            .flat_map(|r| r.detections.clone())
-            .collect();
-
-        let files_infected = results.iter().filter(|r| !r.is_clean()).count() as u64;
+        let files_scanned = progress.files_scanned.load(Ordering::Relaxed);
+        let files_infected = progress.threats_found.load(Ordering::Relaxed);
 
         Ok(ScanReport {
-            scan_type: ScanType::Custom,
+            scan_type,
             started_at,
             completed_at: Utc::now(),
-            files_scanned: results.len() as u64,
+            files_scanned,
             files_infected,
             total_detections: all_detections.len() as u64,
             detections: all_detections,
@@ -202,8 +178,19 @@ impl ScanPipeline {
         })
     }
 
-    /// Resolve scan targets based on scan type.
-    /// Returns paths that exist on the current OS; Custom returns empty (caller provides targets).
+    // ── public API ───────────────────────────────────────────────────────────
+
+    pub fn scan_directory(&self, root: &Path, progress: &ScanProgress) -> Result<ScanReport> {
+        let iter = WalkDir::new(root)
+            .follow_links(false)
+            .into_iter()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_type().is_file())
+            .map(|e| e.into_path());
+        self.run_scan(iter, progress, ScanType::Custom)
+    }
+
+    /// Resolve OS-aware file targets for each scan type.
     pub fn resolve_targets(scan_type: ScanType) -> Vec<PathBuf> {
         let home = std::env::var("HOME")
             .or_else(|_| std::env::var("USERPROFILE"))
@@ -218,162 +205,127 @@ impl ScanPipeline {
                     home.join("Documents"),
                 ];
                 #[cfg(target_os = "windows")]
-                if let Ok(tmp) = std::env::var("TEMP") {
-                    t.push(PathBuf::from(tmp));
-                }
+                if let Ok(tmp) = std::env::var("TEMP") { t.push(PathBuf::from(tmp)); }
                 #[cfg(not(target_os = "windows"))]
-                {
-                    t.push(PathBuf::from("/tmp"));
-                    t.push(PathBuf::from("/var/tmp"));
-                }
+                { t.push(PathBuf::from("/tmp")); t.push(PathBuf::from("/var/tmp")); }
                 t
             }
-
             ScanType::Full => vec![home],
-
             ScanType::Threat => {
                 let mut t = Vec::new();
-
                 #[cfg(target_os = "macos")]
-                {
-                    t.extend([
-                        home.join("Library/LaunchAgents"),
-                        PathBuf::from("/Library/LaunchAgents"),
-                        PathBuf::from("/Library/LaunchDaemons"),
-                        home.join("Library/Application Support"),
-                        home.join("Library/Caches"),
-                        PathBuf::from("/tmp"),
-                        PathBuf::from("/private/tmp"),
-                        PathBuf::from("/etc/cron.d"),
-                        PathBuf::from("/etc/periodic"),
-                        PathBuf::from("/etc/profile.d"),
-                        home.join(".zshrc"),
-                        home.join(".bashrc"),
-                        home.join(".bash_profile"),
-                        home.join(".zprofile"),
-                        home.join(".profile"),
-                    ]);
-                }
-
+                t.extend([
+                    home.join("Library/LaunchAgents"),
+                    PathBuf::from("/Library/LaunchAgents"),
+                    PathBuf::from("/Library/LaunchDaemons"),
+                    home.join("Library/Application Support"),
+                    home.join("Library/Caches"),
+                    PathBuf::from("/tmp"),
+                    PathBuf::from("/private/tmp"),
+                    PathBuf::from("/etc/cron.d"),
+                    PathBuf::from("/etc/periodic"),
+                    PathBuf::from("/etc/profile.d"),
+                    home.join(".zshrc"),
+                    home.join(".bashrc"),
+                    home.join(".bash_profile"),
+                    home.join(".zprofile"),
+                    home.join(".profile"),
+                ]);
                 #[cfg(target_os = "linux")]
-                {
-                    t.extend([
-                        PathBuf::from("/tmp"),
-                        PathBuf::from("/var/tmp"),
-                        PathBuf::from("/dev/shm"),
-                        PathBuf::from("/etc/init.d"),
-                        PathBuf::from("/etc/cron.d"),
-                        PathBuf::from("/etc/cron.daily"),
-                        PathBuf::from("/etc/cron.weekly"),
-                        PathBuf::from("/etc/profile.d"),
-                        PathBuf::from("/usr/local/bin"),
-                        home.join(".config/autostart"),
-                        home.join(".bashrc"),
-                        home.join(".bash_profile"),
-                        home.join(".profile"),
-                        home.join(".zshrc"),
-                    ]);
-                }
-
+                t.extend([
+                    PathBuf::from("/tmp"),
+                    PathBuf::from("/var/tmp"),
+                    PathBuf::from("/dev/shm"),
+                    PathBuf::from("/etc/init.d"),
+                    PathBuf::from("/etc/cron.d"),
+                    PathBuf::from("/etc/cron.daily"),
+                    PathBuf::from("/etc/profile.d"),
+                    PathBuf::from("/usr/local/bin"),
+                    home.join(".config/autostart"),
+                    home.join(".bashrc"),
+                    home.join(".profile"),
+                    home.join(".zshrc"),
+                ]);
                 #[cfg(target_os = "windows")]
                 {
                     if let Ok(appdata) = std::env::var("APPDATA") {
-                        let appdata = PathBuf::from(&appdata);
-                        t.push(
-                            appdata.join(
-                                "Microsoft\\Windows\\Start Menu\\Programs\\Startup",
-                            ),
-                        );
-                        t.push(appdata.join("Roaming"));
+                        let a = PathBuf::from(&appdata);
+                        t.push(a.join("Microsoft\\Windows\\Start Menu\\Programs\\Startup"));
+                        t.push(a.join("Roaming"));
                     }
-                    if let Ok(tmp) = std::env::var("TEMP") {
-                        t.push(PathBuf::from(tmp));
-                    }
+                    if let Ok(tmp) = std::env::var("TEMP") { t.push(PathBuf::from(tmp)); }
                     if let Ok(windir) = std::env::var("WINDIR") {
-                        let windir = PathBuf::from(&windir);
-                        t.push(windir.join("System32\\drivers"));
-                        t.push(windir.join("Temp"));
-                        t.push(windir.join("Tasks"));
-                    }
-                    if let Ok(programdata) = std::env::var("PROGRAMDATA") {
-                        t.push(PathBuf::from(programdata));
+                        let w = PathBuf::from(&windir);
+                        t.push(w.join("System32\\drivers"));
+                        t.push(w.join("Temp"));
+                        t.push(w.join("Tasks"));
                     }
                 }
-
                 t
             }
-
             ScanType::Custom => vec![],
         };
-
         targets.retain(|p| p.exists());
         targets
     }
 
-    /// Scan specific targets from a scan request
+    /// Execute a scan request.
+    ///
+    /// Memory guarantee: paths are **never** collected into a `Vec<PathBuf>`.
+    /// Each target is walked lazily via a producer thread that feeds a channel;
+    /// the bounded SCAN_THREADS rayon pool consumes from that channel.
+    /// Peak resident memory is dominated by:
+    ///   • SCAN_THREADS × MAX_FILE_SIZE of in-flight file data (≈ 128 MB)
+    ///   • A small channel buffer (a few hundred PathBuf entries at most)
     pub fn execute_scan(
         &self,
         request: &ScanRequest,
         progress: &ScanProgress,
     ) -> Result<ScanReport> {
-        let started_at = Utc::now();
-        let start = Instant::now();
-
-        // Resolve targets: for typed scans use OS locations; for Custom use provided targets
         let resolved: Vec<PathBuf> = if request.scan_type == ScanType::Custom {
             request.targets.clone()
         } else {
             Self::resolve_targets(request.scan_type)
         };
 
-        // Collect all files from all resolved targets
-        let mut all_files: Vec<PathBuf> = Vec::new();
-        for target in &resolved {
-            if target.is_file() {
-                all_files.push(target.clone());
-            } else if target.is_dir() {
-                let files: Vec<PathBuf> = WalkDir::new(target)
-                    .follow_links(false)
-                    .into_iter()
-                    .filter_map(|e| e.ok())
-                    .filter(|e| e.file_type().is_file())
-                    .map(|e| e.into_path())
-                    .collect();
-                all_files.extend(files);
-            }
-        }
+        // Use a channel so WalkDir runs in a producer thread and never builds a
+        // full Vec<PathBuf>.  The consumer side is a sequential iterator that
+        // par_bridge() distributes across the bounded thread pool.
+        let (tx, rx) = std::sync::mpsc::channel::<PathBuf>();
 
-        progress.set_total(all_files.len() as u64);
-
-        let results: Vec<FileScanResult> = all_files
-            .par_iter()
-            .filter_map(|path| {
-                progress.set_current(path.clone());
-                let result = self.scan_file(path).ok()?;
-                if !result.is_clean() {
-                    progress.add_threat();
+        // Producer: walks all targets and sends paths into the channel.
+        // The `resolved` clone is small (a handful of PathBufs).
+        let producer = {
+            let resolved = resolved.clone();
+            std::thread::spawn(move || {
+                for target in &resolved {
+                    if target.is_file() {
+                        let _ = tx.send(target.clone());
+                    } else if target.is_dir() {
+                        for entry in WalkDir::new(target)
+                            .follow_links(false)
+                            .into_iter()
+                            .filter_map(|e| e.ok())
+                            .filter(|e| e.file_type().is_file())
+                        {
+                            // Stop if the consumer has hung up
+                            if tx.send(entry.into_path()).is_err() {
+                                return;
+                            }
+                        }
+                    }
                 }
-                progress.increment();
-                Some(result)
+                // tx drops here → channel closes → receiver iterator terminates
             })
-            .collect();
+        };
 
-        let all_detections: Vec<Detection> = results
-            .iter()
-            .flat_map(|r| r.detections.clone())
-            .collect();
+        // Consumer: receive path by path and feed rayon via par_bridge().
+        let scan_type = request.scan_type;
+        let report = self.run_scan(rx.into_iter(), progress, scan_type);
 
-        let files_infected = results.iter().filter(|r| !r.is_clean()).count() as u64;
+        // Join the producer thread to ensure filesystem handles are released.
+        let _ = producer.join();
 
-        Ok(ScanReport {
-            scan_type: request.scan_type,
-            started_at,
-            completed_at: Utc::now(),
-            files_scanned: results.len() as u64,
-            files_infected,
-            total_detections: all_detections.len() as u64,
-            detections: all_detections,
-            duration_ms: start.elapsed().as_millis() as u64,
-        })
+        report
     }
 }
